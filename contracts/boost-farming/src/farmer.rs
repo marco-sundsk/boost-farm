@@ -1,5 +1,15 @@
 use crate::*;
 
+#[derive(BorshSerialize, BorshDeserialize, Serialize, Default, Clone)]
+#[cfg_attr(not(target_arch = "wasm32"), derive(Debug, Deserialize))]
+#[serde(crate = "near_sdk::serde")]
+pub struct FarmerWithdraw {
+    #[serde(with = "u128_dec_format")]
+    pub amount: Balance,
+    #[serde(with = "u64_dec_format")]
+    pub apply_timestamp: u64,
+}
+
 #[derive(BorshSerialize, BorshDeserialize, Serialize)]
 #[serde(crate = "near_sdk::serde")]
 #[cfg_attr(feature = "test", derive(Clone))]
@@ -9,6 +19,7 @@ pub struct Farmer {
     pub sponsor_id: AccountId,
     /// Amounts of various reward tokens the farmer claimed.
     pub rewards: HashMap<AccountId, Balance>,
+    pub withdraws: HashMap<SeedId, FarmerWithdraw>,
     /// Various seed tokens the farmer staked.
     #[serde(skip_serializing)]
     pub seeds: UnorderedMap<SeedId, FarmerSeed>,
@@ -16,14 +27,12 @@ pub struct Farmer {
 
 #[derive(BorshSerialize, BorshDeserialize)]
 pub enum VFarmer {
-    V0(FarmerV0),
     Current(Farmer),
 }
 
 impl From<VFarmer> for Farmer {
     fn from(v: VFarmer) -> Self {
         match v {
-            VFarmer::V0(c) => c.into(),
             VFarmer::Current(c) => c,
         }
     }
@@ -41,6 +50,7 @@ impl Farmer {
             farmer_id: farmer_id.clone(),
             sponsor_id: sponsor_id.clone(),
             rewards: HashMap::new(),
+            withdraws: HashMap::new(),
             seeds: UnorderedMap::new(StorageKeys::FarmerSeed {
                 account_id: farmer_id.clone(),
             }),
@@ -61,6 +71,32 @@ impl Farmer {
             let remain = prev - amount;
             if remain > 0 {
                 self.rewards.insert(token_id.clone(), remain);
+            }
+        }
+    }
+
+    pub fn add_withdraw_seed(&mut self, seed_id: &SeedId, amount: Balance) {
+        if let Some(mut withdraw_seed) = self.withdraws.get_mut(seed_id) {
+            withdraw_seed.amount += amount;
+            withdraw_seed.apply_timestamp = env::block_timestamp();
+        } else {
+            self.withdraws.insert(seed_id.clone(), FarmerWithdraw {
+                amount,
+                apply_timestamp: env::block_timestamp(),
+            });
+        }
+    }
+
+    pub fn sub_withdraw_seed(&mut self, seed_id: &SeedId, amount: Balance, lock_duration: DurationSec) {
+        if let Some(prev) = self.withdraws.remove(seed_id) {
+            require!(amount <= prev.amount, E101_INSUFFICIENT_BALANCE);
+            require!(env::block_timestamp() >= prev.apply_timestamp + to_nano(lock_duration), E305_STILL_IN_LOCK);
+            let remain = prev.amount - amount;
+            if remain > 0 {
+                self.withdraws.insert(seed_id.clone(), FarmerWithdraw {
+                    amount: remain,
+                    apply_timestamp: prev.apply_timestamp,
+                });
             }
         }
     }
@@ -100,9 +136,6 @@ impl Contract {
         let mut new_user_rps = HashMap::new();
         for (farm_id, vfarm) in &seed.farms {
             let (seed_farm_rps, seed_farm_terms_reward_token, seed_farm_total_reward) = match vfarm {
-                VSeedFarm::V0(farm) => {
-                    (farm.rps, farm.terms.reward_token.clone(), farm.total_reward)
-                }
                 VSeedFarm::Current(farm) => {
                     (farm.rps, farm.terms.reward_token.clone(), farm.total_reward)
                 }

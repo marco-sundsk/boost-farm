@@ -23,6 +23,7 @@ pub struct Seed {
     pub slash_rate: u32,
     /// if min_lock_duration == 0, means forbid locking
     pub min_locking_duration_sec: DurationSec,
+    pub farmer_count: u32,
 }
 
 #[derive(BorshSerialize, BorshDeserialize)]
@@ -49,9 +50,6 @@ impl Seed {
     pub fn update(&mut self) {
         for (_, vfarm) in self.farms.iter_mut() {
             match vfarm {
-                VSeedFarm::V0(farm) => {
-                    farm.update(self.total_seed_power);
-                }
                 VSeedFarm::Current(farm) => {
                     farm.update(self.total_seed_power);
                 }
@@ -63,9 +61,6 @@ impl Seed {
         for (farm_id, amount) in claimed {
             let vfarm = self.farms.get_mut(farm_id).unwrap();
             match vfarm {
-                VSeedFarm::V0(farm) => {
-                    farm.claimed_reward += amount;
-                }
                 VSeedFarm::Current(farm) => {
                     farm.claimed_reward += amount;
                 }
@@ -90,6 +85,7 @@ impl Seed {
             min_deposit,
             slash_rate: default_slash_rate,
             min_locking_duration_sec,
+            farmer_count: 0,
         }
     }
 }

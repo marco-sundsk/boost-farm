@@ -50,18 +50,34 @@ impl Contract {
         .emit();
     }
 
+
+    pub fn withdraw_seed(&mut self, seed_id: SeedId, amount: Option<U128>) -> Promise {
+        require!(self.data().state == RunningState::Running, E004_CONTRACT_PAUSED);
+        let farmer_id = env::predecessor_account_id();
+        let mut farmer = self.internal_unwrap_farmer(&farmer_id);
+        let withdraw_seed = farmer.withdraws.get(&seed_id).unwrap();
+        let withdraw_amount: Balance = if let Some(amount) = amount {
+            amount.into()
+        } else {
+            withdraw_seed.amount
+        };
+        farmer.sub_withdraw_seed(&seed_id, withdraw_amount, self.get_config().delay_withdraw_sec);
+        self.internal_set_farmer(&farmer_id, farmer);
+        self.transfer_seed_token(&farmer_id, &seed_id, withdraw_amount)
+    }
+
     #[payable]
-    pub fn unlock_and_withdraw_seed(
+    pub fn unlock_and_unstake_seed(
         &mut self,
         seed_id: SeedId,
         unlock_amount: U128,
-        withdraw_amount: U128,
-    ) -> PromiseOrValue<bool> {
+        unstake_amount: U128,
+    ) {
         assert_one_yocto();
         require!(self.data().state == RunningState::Running, E004_CONTRACT_PAUSED);
 
         let unlock_amount: Balance = unlock_amount.into();
-        let withdraw_amount: Balance = withdraw_amount.into();
+        let unstake_amount: Balance = unstake_amount.into();
 
         let farmer_id = env::predecessor_account_id();
 
@@ -71,28 +87,34 @@ impl Contract {
         self.internal_do_farmer_claim(&mut farmer, &mut seed);
 
         let mut farmer_seed = farmer.seeds.get(&seed_id).unwrap();
+        let is_empty_farmer_seed = farmer_seed.is_empty();
 
         let prev = farmer_seed.get_seed_power();
 
-        let decreased_seed_power = 
+        let unlock_decreased_seed_power = 
         if unlock_amount > 0 {
             farmer_seed.unlock_to_free(unlock_amount)
         } else {
             0
         };
-        let ret: PromiseOrValue<bool> = if withdraw_amount > 0 {
-            farmer_seed.withdraw_free(withdraw_amount);
-            self.transfer_seed_token(&farmer_id, &seed_id, withdraw_amount).into()
+        let unstake_decreased_seed_power = if unstake_amount > 0 {
+            farmer.add_withdraw_seed(&seed_id, unstake_amount);
+            farmer_seed.withdraw_free(unstake_amount)
         } else {
-            PromiseOrValue::Value(true)
+            0
         };
 
-        seed.total_seed_amount -= withdraw_amount;
+        seed.total_seed_amount -= unstake_amount;
         seed.total_seed_power = seed.total_seed_power - prev + farmer_seed.get_seed_power();
 
         if farmer_seed.is_empty() {
             farmer.seeds.remove(&seed_id);
+            if seed.farmer_count > 0 && !is_empty_farmer_seed{
+                seed.farmer_count -= 1;
+            }
         } else {
+            require!((farmer_seed.free_amount == 0 || farmer_seed.free_amount >= seed.min_deposit) && 
+                (farmer_seed.locked_amount == 0 || farmer_seed.locked_amount >= seed.min_deposit), E307_BELOW_MIN_DEPOSIT);
             farmer.seeds.insert(&seed_id, &farmer_seed);
         }
 
@@ -106,12 +128,20 @@ impl Contract {
                 farmer_id: &farmer_id,
                 seed_id: &seed_id,
                 unlock_amount: &U128(unlock_amount),
-                decreased_power: &U128(decreased_seed_power),
+                decreased_power: &U128(unlock_decreased_seed_power),
                 slashed_seed: &U128(0),
             }
             .emit();
         }
-        ret
+        if unstake_amount > 0 {
+            Event::SeedUnstake {
+                farmer_id: &farmer_id,
+                seed_id: &seed_id,
+                unstake_amount: &U128(unstake_amount),
+                decreased_power: &U128(unstake_decreased_seed_power),
+            }
+            .emit();
+        }
     }
 
     #[payable]
@@ -171,12 +201,17 @@ impl Contract {
         match env::promise_result(0) {
             PromiseResult::NotReady => unreachable!(),
             PromiseResult::Failed => {
-                // all seed amount go to lostfound
-                let seed_amount = self.data().seeds_lostfound.get(&seed_id).unwrap_or(0);
-                self.data_mut()
-                    .seeds_lostfound
-                    .insert(&seed_id, &(seed_amount + amount));
-
+                // all seed amount goes back to withdraws
+               if let Some(mut farmer) = self.internal_get_farmer(&sender_id) {
+                    farmer.add_withdraw_seed(&seed_id, amount);
+                    self.internal_set_farmer(&sender_id, farmer);
+               } else {
+                    // if inner farmer not exist, goes to lostfound
+                    let seed_amount = self.data().seeds_lostfound.get(&seed_id).unwrap_or(0);
+                    self.data_mut()
+                        .seeds_lostfound
+                        .insert(&seed_id, &(seed_amount + amount));
+               }
                 Event::SeedWithdraw {
                     farmer_id: &sender_id,
                     seed_id: &seed_id,

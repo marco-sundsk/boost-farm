@@ -71,9 +71,6 @@ impl Contract {
     pub fn get_outdated_farm(&self, farm_id: FarmId) -> Option<SeedFarm> {
         self.data().outdated_farms.get(&farm_id).map(|vf| {
             match vf {
-                VSeedFarm::V0(farm) => {
-                    farm.into()
-                }
                 VSeedFarm::Current(farm) => {
                     farm
                 }
@@ -139,9 +136,6 @@ impl Contract {
             .values()
             .map(|vf| {
                 match vf {
-                    VSeedFarm::V0(farm) => {
-                        farm.clone().into()
-                    }
                     VSeedFarm::Current(farm) => {
                         farm.clone()
                     }
@@ -155,9 +149,6 @@ impl Contract {
         let seed = self.internal_unwrap_seed(&seed_id);
         seed.farms.get(&farm_id).map(|vf| {
             match vf {
-                VSeedFarm::V0(farm) => {
-                    farm.clone().into()
-                }
                 VSeedFarm::Current(farm) => {
                     farm.clone()
                 }
@@ -229,6 +220,24 @@ impl Contract {
                 .unwrap_or(U128(0))
         } else {
             U128(0)
+        }
+    }
+
+    pub fn list_farmer_withdraws(&self, farmer_id: AccountId) -> HashMap<SeedId, FarmerWithdraw> {
+        if let Some(farmer) = self.internal_get_farmer(&farmer_id) {
+            farmer.withdraws.into_iter()
+                .collect()
+        } else {
+            HashMap::new()
+        }
+    }
+
+    /// Returns withdraw info of given seed token that ready to withdraw.
+    pub fn get_farmer_withdraw(&self, farmer_id: AccountId, seed_id: SeedId) -> Option<FarmerWithdraw> {
+        if let Some(farmer) = self.internal_get_farmer(&farmer_id) {
+            farmer.withdraws.get(&seed_id).map(|v| v.clone())
+        } else {
+            None
         }
     }
 
